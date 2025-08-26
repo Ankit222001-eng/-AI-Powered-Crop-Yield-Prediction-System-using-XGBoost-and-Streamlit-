@@ -19,35 +19,52 @@ import scipy.stats as st_dist
 # ==========================
 @st.cache_data
 def load_and_merge():
-    # Load datasets
     yield_data = pd.read_csv("yield.csv")
     rainfall = pd.read_csv("rainfall.csv")
     temp = pd.read_csv("temp.csv")
     pesticides = pd.read_csv("pesticides.csv")
     yield_df_extra = pd.read_csv("yield_df.csv")
 
-    # Clean & rename
-    yield_data = yield_data[["Area", "Item", "Year", "Value"]].rename(columns={"Value": "hg_ha_yield"})
-    rainfall = rainfall.rename(columns={"average_rain_fall_mm_per_year": "rainfall_mm"})
-    temp = temp.rename(columns={"avg_temp": "temperature"})
-    pesticides = pesticides.rename(columns={"Value": "pesticides_tonnes"})
+    # --- Standardize column names ---
+    yield_data = yield_data.rename(columns={
+        "Value": "hg_ha_yield",
+        "area": "Area",
+        "year": "Year"
+    })
+    yield_data = yield_data[["Area", "Item", "Year", "hg_ha_yield"]]
 
-    # Merge raw 4 CSVs
+    rainfall = rainfall.rename(columns={
+        "area": "Area",
+        "year": "Year",
+        "average_rain_fall_mm_per_year": "rainfall_mm"
+    })
+
+    temp = temp.rename(columns={
+        "country": "Area",
+        "year": "Year",
+        "avg_temp": "temperature"
+    })
+
+    pesticides = pesticides.rename(columns={
+        "area": "Area",
+        "year": "Year",
+        "Value": "pesticides_tonnes"
+    })
+
+    # --- Merge datasets ---
     df = yield_data.merge(rainfall, on=["Area", "Year"], how="left")
-    df = df.merge(temp, left_on=["Area", "Year"], right_on=["country", "year"], how="left")
-    df.drop(["country", "year"], axis=1, inplace=True)
-    df = df.merge(pesticides[["Area", "Year", "pesticides_tonnes"]], on=["Area", "Year"], how="left")
+    df = df.merge(temp, on=["Area", "Year"], how="left")
+    df = df.merge(pesticides, on=["Area", "Year"], how="left")
 
-    # Convert yield
+    # --- Convert yield ---
     df["yield_tons_per_ha"] = df["hg_ha_yield"] / 100.0
     df.drop(columns=["hg_ha_yield"], inplace=True)
 
-    # Check yield_df.csv and append
-    if "yield_tons_per_ha" not in yield_df_extra.columns:
+    # --- Handle extra dataset (yield_df.csv) ---
+    if "yield_tons_per_ha" not in yield_df_extra.columns and "hg/ha_yield" in yield_df_extra.columns:
         yield_df_extra["yield_tons_per_ha"] = yield_df_extra["hg/ha_yield"] / 100.0
         yield_df_extra = yield_df_extra.drop(columns=["hg/ha_yield"])
 
-    # Align columns and merge unique rows
     common_cols = list(set(df.columns).intersection(set(yield_df_extra.columns)))
     df = pd.concat([df[common_cols], yield_df_extra[common_cols]], ignore_index=True).drop_duplicates()
 
@@ -108,7 +125,7 @@ rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 mae = mean_absolute_error(y_test, y_pred)
 r2 = r2_score(y_test, y_pred)
 
-st.title("🌾 Crop Yield Prediction with XGBoost")
+st.title("🌾 AI-Powered Crop Yield Prediction System")
 st.subheader("📊 Model Performance")
 st.write(f"**RMSE:** {rmse:.2f}")
 st.write(f"**MAE:** {mae:.2f}")
