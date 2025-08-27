@@ -1,5 +1,5 @@
 # app.py
-# 🌾 Crop Yield Prediction using XGBoost + RandomizedSearchCV + SHAP + Streamlit
+# 🌾 AI-Powered Crop Yield Prediction with XGBoost + SHAP + Streamlit
 
 import pandas as pd
 import numpy as np
@@ -13,7 +13,6 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from xgboost import XGBRegressor
 import scipy.stats as st_dist
 
-
 # ==========================
 # 1. Load & Merge Multiple CSVs
 # ==========================
@@ -25,59 +24,61 @@ def load_and_merge():
     pesticides = pd.read_csv("pesticides.csv")
     yield_df_extra = pd.read_csv("yield_df.csv")
 
-    # --- Standardize column names ---
-    yield_data = yield_data.rename(columns={
-        "Value": "hg_ha_yield",
-        "area": "Area",
-        "year": "Year"
-    })
-    yield_data = yield_data[["Area", "Item", "Year", "hg_ha_yield"]]
+    # 🔹 Strip spaces from column names
+    for df in [yield_data, rainfall, temp, pesticides, yield_df_extra]:
+        df.columns = df.columns.str.strip()
 
-    rainfall = rainfall.rename(columns={
-        "area": "Area",
-        "year": "Year",
+    # --- Standardize column names ---
+    yield_data = yield_data.rename(columns={"Value": "hg_ha_yield"})
+    rainfall = rainfall.rename(columns={"average_rain_fall_mm_per_year": "rainfall_mm"})
+    temp = temp.rename(columns={"year": "Year", "country": "Area", "avg_temp": "temperature"})
+    pesticides = pesticides.rename(columns={"Value": "pesticides_tonnes"})
+    yield_df_extra = yield_df_extra.rename(columns={
+        "avg_temp": "temperature",
         "average_rain_fall_mm_per_year": "rainfall_mm"
     })
 
-    temp = temp.rename(columns={
-        "country": "Area",
-        "year": "Year",
-        "avg_temp": "temperature"
-    })
-
-    pesticides = pesticides.rename(columns={
-        "area": "Area",
-        "year": "Year",
-        "Value": "pesticides_tonnes"
-    })
-
     # --- Merge datasets ---
-    df = yield_data.merge(rainfall, on=["Area", "Year"], how="left")
-    df = df.merge(temp, on=["Area", "Year"], how="left")
-    df = df.merge(pesticides, on=["Area", "Year"], how="left")
+    df = yield_data[["Area", "Item", "Year", "hg_ha_yield"]].merge(
+        rainfall[["Area", "Year", "rainfall_mm"]], on=["Area", "Year"], how="left"
+    )
+    df = df.merge(temp[["Area", "Year", "temperature"]], on=["Area", "Year"], how="left")
+    df = df.merge(
+        pesticides[["Area", "Year", "pesticides_tonnes"]], on=["Area", "Year"], how="left"
+    )
 
     # --- Convert yield ---
     df["yield_tons_per_ha"] = df["hg_ha_yield"] / 100.0
-    df.drop(columns=["hg_ha_yield"], inplace=True)
+    df.drop(columns=["hg_ha_yield"], inplace=True, errors="ignore")
 
     # --- Handle extra dataset (yield_df.csv) ---
-    if "yield_tons_per_ha" not in yield_df_extra.columns and "hg/ha_yield" in yield_df_extra.columns:
+    if "hg/ha_yield" in yield_df_extra.columns:
         yield_df_extra["yield_tons_per_ha"] = yield_df_extra["hg/ha_yield"] / 100.0
-        yield_df_extra = yield_df_extra.drop(columns=["hg/ha_yield"])
+        yield_df_extra.drop(columns=["hg/ha_yield"], inplace=True, errors="ignore")
 
-    common_cols = list(set(df.columns).intersection(set(yield_df_extra.columns)))
-    df = pd.concat([df[common_cols], yield_df_extra[common_cols]], ignore_index=True).drop_duplicates()
+    # ✅ Ensure consistent column set
+    keep_cols = ["Area", "Item", "Year", "rainfall_mm", "temperature", "pesticides_tonnes", "yield_tons_per_ha"]
+    df = pd.concat([df[keep_cols], yield_df_extra[keep_cols]], ignore_index=True).drop_duplicates()
 
     return df
 
 
-# Load merged dataset
-df = load_and_merge()
-
-
+# ==========================
 # ==========================
 # 2. Preprocessing
 # ==========================
+df = load_and_merge()
+
+# 🔹 Force numeric types
+for col in ["rainfall_mm", "temperature", "pesticides_tonnes", "Year", "yield_tons_per_ha"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+# 🔹 Drop rows with NaN in important columns
+df = df.dropna(subset=["yield_tons_per_ha", "rainfall_mm", "temperature", "pesticides_tonnes", "Year"])
+
+st.write("✅ Final merged dataset preview:", df.head())
+
+# Encode categorical features
 le_crop, le_area = LabelEncoder(), LabelEncoder()
 df["Crop"] = le_crop.fit_transform(df["Item"])
 df["Area_enc"] = le_area.fit_transform(df["Area"])
@@ -86,7 +87,6 @@ X = df[["Area_enc", "Crop", "Year", "rainfall_mm", "temperature", "pesticides_to
 y = df["yield_tons_per_ha"]
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
 
 # ==========================
 # 3. Train with RandomizedSearchCV
@@ -105,7 +105,7 @@ def train_model():
     rs = RandomizedSearchCV(
         estimator=XGBRegressor(random_state=42),
         param_distributions=param_dist,
-        n_iter=25,
+        n_iter=10,
         scoring="neg_root_mean_squared_error",
         cv=3,
         n_jobs=-1,
@@ -160,10 +160,25 @@ if st.button("Predict Yield"):
 
 # ==========================
 # 6. SHAP Explainability
-# ==========================
-st.subheader("🔍 SHAP Feature Importance")
-explainer = shap.Explainer(model, X_train)
-shap_values = explainer(X_test[:200])
-fig, ax = plt.subplots()
-shap.summary_plot(shap_values, X_test[:200], show=False)
-st.pyplot(fig)
+
+st.subheader("📌 Feature Importance (XGBoost)")
+
+importance = model.feature_importances_
+importance_df = pd.DataFrame({
+    "feature": X_test.columns,
+    "importance": importance
+}).sort_values(by="importance", ascending=False)
+
+st.bar_chart(importance_df.set_index("feature"))
+
+#py -3.11 -m venv .venv
+#./.venv/Scripts/python.exe --version
+
+
+#./.venv/Scripts/python.exe -m pip install --upgrade pip
+#./.venv/Scripts/python.exe -m pip install -r requirements.txt
+
+#./.venv/Scripts/python.exe -m streamlit run app.py
+
+
+
